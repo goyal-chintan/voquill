@@ -1,4 +1,6 @@
+import 'package:app/model/local_transcription_model.dart';
 import 'package:app/utils/channel_utils.dart';
+import 'package:app/utils/channel_utils.dart' as channel_utils;
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -37,6 +39,8 @@ final fakeSharedChannel = _FakeSharedChannel();
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
+  const channel = MethodChannel('com.voquill.mobile/shared');
+
   setUp(() {
     overrideCanSyncForTest(true);
     fakeSharedChannel.install();
@@ -44,6 +48,7 @@ void main() {
 
   tearDown(() {
     overrideCanSyncForTest(null);
+    channel_utils.debugSetCanSyncOverride(null);
     fakeSharedChannel.reset();
   });
 
@@ -111,5 +116,96 @@ void main() {
         },
       },
     );
+  });
+
+  test('syncKeyboardAiConfig includes local mode payload', () async {
+    channel_utils.debugSetCanSyncOverride(true);
+    fakeSharedChannel.reset();
+    fakeSharedChannel.install();
+
+    await syncKeyboardAiConfig(
+      transcriptionMode: 'local',
+      postProcessingMode: 'cloud',
+      transcriptionModel: 'tiny',
+    );
+
+    expect(fakeSharedChannel.methods, contains('setKeyboardAiConfig'));
+    final args = fakeSharedChannel.argumentsFor('setKeyboardAiConfig') as Map;
+    expect(args['transcriptionMode'], 'local');
+    expect(args['transcriptionModel'], 'tiny');
+  });
+
+  test('syncKeyboardAiConfig sends explicit clear for local mode without model', () async {
+    channel_utils.debugSetCanSyncOverride(true);
+    fakeSharedChannel.reset();
+    fakeSharedChannel.install();
+
+    await syncKeyboardAiConfig(
+      transcriptionMode: 'local',
+      postProcessingMode: 'cloud',
+      clearTranscriptionModel: true,
+    );
+
+    expect(fakeSharedChannel.methods, contains('setKeyboardAiConfig'));
+    final args = fakeSharedChannel.argumentsFor('setKeyboardAiConfig') as Map;
+    expect(args['transcriptionMode'], 'local');
+    expect(args.containsKey('transcriptionModel'), isFalse);
+    expect(args['clearTranscriptionModel'], 'true');
+  });
+
+  test('local transcription model bridge uses expected channel methods', () async {
+    channel_utils.debugSetCanSyncOverride(true);
+    fakeSharedChannel.reset();
+    fakeSharedChannel.onInvoke = (method, args) {
+      if (method == 'listLocalTranscriptionModels') {
+        return [
+          {
+            'slug': 'tiny',
+            'label': 'Whisper Tiny (77 MB)',
+            'helper': 'Fastest, lowest accuracy',
+            'sizeBytes': 77000000,
+            'languageSupport': 'multilingual',
+            'downloaded': true,
+            'valid': true,
+            'selected': true,
+          },
+        ];
+      }
+      return null;
+    };
+    fakeSharedChannel.install();
+
+    final models = await listLocalTranscriptionModels();
+    await downloadLocalTranscriptionModel('tiny');
+    await deleteLocalTranscriptionModel('tiny');
+    await selectLocalTranscriptionModel('tiny');
+
+    expect(
+      models,
+      const [
+        LocalTranscriptionModel(
+          slug: 'tiny',
+          label: 'Whisper Tiny (77 MB)',
+          helper: 'Fastest, lowest accuracy',
+          sizeBytes: 77000000,
+          languageSupport: LocalTranscriptionLanguageSupport.multilingual,
+          downloaded: true,
+          valid: true,
+          selected: true,
+        ),
+      ],
+    );
+    expect(
+      fakeSharedChannel.methods,
+      [
+        'listLocalTranscriptionModels',
+        'downloadLocalTranscriptionModel',
+        'deleteLocalTranscriptionModel',
+        'selectLocalTranscriptionModel',
+      ],
+    );
+    expect((fakeSharedChannel.argumentsFor('downloadLocalTranscriptionModel') as Map)['slug'], 'tiny');
+    expect((fakeSharedChannel.argumentsFor('deleteLocalTranscriptionModel') as Map)['slug'], 'tiny');
+    expect((fakeSharedChannel.argumentsFor('selectLocalTranscriptionModel') as Map)['slug'], 'tiny');
   });
 }

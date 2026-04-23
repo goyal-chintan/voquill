@@ -22,9 +22,25 @@ struct DictationConstants {
     static let defaultIdleTimeout: TimeInterval = 120.0
 
     static let appGroupId = "group.com.voquill.mobile"
+    static let localTranscriptionModelsDirectoryName = "models"
+    static let localTranscriptionManifestFileName = "local_transcription_manifest.json"
+
+    static func appGroupContainerURL(fileManager: FileManager = .default) -> URL? {
+        fileManager.containerURL(forSecurityApplicationGroupIdentifier: appGroupId)
+    }
+
+    static func localTranscriptionModelsDirectoryURL(fileManager: FileManager = .default) -> URL? {
+        appGroupContainerURL(fileManager: fileManager)?
+            .appendingPathComponent(localTranscriptionModelsDirectoryName, isDirectory: true)
+    }
+
+    static func localTranscriptionManifestURL(fileManager: FileManager = .default) -> URL? {
+        appGroupContainerURL(fileManager: fileManager)?
+            .appendingPathComponent(localTranscriptionManifestFileName, isDirectory: false)
+    }
 
     static var audioFileURL: URL? {
-        FileManager.default.containerURL(forSecurityApplicationGroupIdentifier: appGroupId)?
+        appGroupContainerURL()?
             .appendingPathComponent("dictation_recording.m4a")
     }
 }

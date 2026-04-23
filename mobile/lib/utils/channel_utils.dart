@@ -3,6 +3,7 @@ import 'dart:io' show Platform;
 import 'package:app/api/api_token_api.dart';
 import 'package:app/api/counter_api.dart';
 import 'package:app/flavor.dart';
+import 'package:app/model/local_transcription_model.dart';
 import 'package:app/model/tone_model.dart';
 import 'package:app/utils/env_utils.dart';
 import 'package:app/utils/language_utils.dart';
@@ -20,8 +21,15 @@ bool get _canSync {
   return _canSyncOverrideForTest ?? (Platform.isIOS || Platform.isAndroid);
 }
 
+bool get canSyncKeyboardBridge => _canSync;
+
 @visibleForTesting
 void overrideCanSyncForTest(bool? value) {
+  _canSyncOverrideForTest = value;
+}
+
+@visibleForTesting
+void debugSetCanSyncOverride(bool? value) {
   _canSyncOverrideForTest = value;
 }
 
@@ -202,6 +210,7 @@ Future<void> syncKeyboardAiConfig({
   String? transcriptionApiKey,
   String? transcriptionBaseUrl,
   String? transcriptionModel,
+  bool clearTranscriptionModel = false,
   String? transcriptionAzureRegion,
   String? postProcessingProvider,
   String? postProcessingApiKey,
@@ -218,6 +227,7 @@ Future<void> syncKeyboardAiConfig({
       'transcriptionApiKey': ?transcriptionApiKey,
       'transcriptionBaseUrl': ?transcriptionBaseUrl,
       'transcriptionModel': ?transcriptionModel,
+      if (clearTranscriptionModel) 'clearTranscriptionModel': 'true',
       'transcriptionAzureRegion': ?transcriptionAzureRegion,
       'postProcessingProvider': ?postProcessingProvider,
       'postProcessingApiKey': ?postProcessingApiKey,
@@ -263,6 +273,102 @@ Future<void> syncKeyboardToolbar({
   } catch (e) {
     _logger.w('Failed to sync keyboard toolbar', e);
   }
+}
+
+Future<List<LocalTranscriptionModel>?>
+listLocalTranscriptionModelsOrNull() async {
+  if (!_canSync) return null;
+
+  try {
+    final result = await _sharedChannel.invokeListMethod<dynamic>(
+      'listLocalTranscriptionModels',
+    );
+    if (result == null) return [];
+    return result
+        .map(
+          (entry) => _localTranscriptionModelFromMap(
+            Map<String, dynamic>.from(entry as Map),
+          ),
+        )
+        .toList();
+  } catch (e) {
+    _logger.w('Failed to list local transcription models', e);
+    return null;
+  }
+}
+
+Future<List<LocalTranscriptionModel>> listLocalTranscriptionModels() async {
+  return (await listLocalTranscriptionModelsOrNull()) ?? [];
+}
+
+Future<void> downloadLocalTranscriptionModel(String slug) async {
+  if (!_canSync) return;
+
+  try {
+    await _sharedChannel.invokeMethod('downloadLocalTranscriptionModel', {
+      'slug': slug,
+    });
+  } catch (e) {
+    _logger.w('Failed to download local transcription model', e);
+  }
+}
+
+Future<bool> deleteLocalTranscriptionModel(String slug) async {
+  if (!_canSync) return false;
+
+  try {
+    await _sharedChannel.invokeMethod('deleteLocalTranscriptionModel', {
+      'slug': slug,
+    });
+    return true;
+  } catch (e) {
+    _logger.w('Failed to delete local transcription model', e);
+    return false;
+  }
+}
+
+Future<bool> selectLocalTranscriptionModel(String slug) async {
+  if (!_canSync) return false;
+
+  try {
+    final result = await _sharedChannel.invokeMethod<dynamic>(
+      'selectLocalTranscriptionModel',
+      {'slug': slug},
+    );
+    if (result is bool) return result;
+    return true;
+  } catch (e) {
+    _logger.w('Failed to select local transcription model', e);
+    return false;
+  }
+}
+
+LocalTranscriptionModel _localTranscriptionModelFromMap(
+  Map<String, dynamic> map,
+) {
+  return LocalTranscriptionModel(
+    slug: map['slug'] as String,
+    label: map['label'] as String,
+    helper: map['helper'] as String,
+    sizeBytes: (map['sizeBytes'] as num).toInt(),
+    languageSupport: _localTranscriptionLanguageSupportFromValue(
+      map['languageSupport'] as String?,
+    ),
+    downloaded: map['downloaded'] == true,
+    valid: map['valid'] == true,
+    selected: map['selected'] == true,
+    downloadProgress: (map['downloadProgress'] as num?)?.toDouble(),
+    validationError: map['validationError'] as String?,
+  );
+}
+
+LocalTranscriptionLanguageSupport _localTranscriptionLanguageSupportFromValue(
+  String? value,
+) {
+  return switch (value) {
+    'englishOnly' => LocalTranscriptionLanguageSupport.englishOnly,
+    _ => LocalTranscriptionLanguageSupport.multilingual,
+  };
 }
 
 Future<void> syncKeyboardLanguages({

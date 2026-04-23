@@ -130,6 +130,7 @@ class VoquillIME : InputMethodService() {
     private var nightMode = Configuration.UI_MODE_NIGHT_UNDEFINED
 
     private val executor = Executors.newSingleThreadExecutor()
+    private val localTranscriptionModelManager by lazy { LocalTranscriptionModelManager(filesDir) }
 
     // Full keyboard matrix
     private var keyboardLayoutSpec: KeyboardLayoutSpec? = null
@@ -1089,18 +1090,72 @@ class VoquillIME : InputMethodService() {
         return null
     }
 
-    private fun buildTranscribeRepo(prefs: android.content.SharedPreferences, config: RepoConfig?): BaseTranscribeAudioRepo? {
+    private fun buildTranscribeRepo(
+        prefs: android.content.SharedPreferences,
+        config: RepoConfig?,
+    ): TranscribeRepoBuildResult {
         val mode = prefs.getString(KEY_AI_TRANSCRIPTION_MODE, "cloud") ?: "cloud"
-        if (mode == "api") {
-            val apiKey = prefs.getString(KEY_AI_TRANSCRIPTION_API_KEY, null) ?: return null
-            val provider = prefs.getString(KEY_AI_TRANSCRIPTION_PROVIDER, "openai") ?: "openai"
-            val baseUrl = prefs.getString(KEY_AI_TRANSCRIPTION_BASE_URL, null)
-            val model = prefs.getString(KEY_AI_TRANSCRIPTION_MODEL, null)
-            val azureRegion = prefs.getString(KEY_AI_TRANSCRIPTION_AZURE_REGION, null)
-            return ByokTranscribeAudioRepo(apiKey, provider, baseUrl, model, azureRegion)
+        val selectedModel = prefs.getString(KEY_AI_TRANSCRIPTION_MODEL, null)
+        val localTranscriptionSupported = LocalTranscribeAudioRepo.isSupported()
+        val localModelValid =
+            localTranscriptionSupported &&
+                selectedModel?.let(localTranscriptionModelManager::validateModel) == true
+        val backend =
+            TranscriptionBackendResolver.resolve(
+                transcriptionMode = mode,
+                selectedModel = selectedModel,
+                hasApiKey = !prefs.getString(KEY_AI_TRANSCRIPTION_API_KEY, null).isNullOrBlank(),
+                hasCloudConfig = config != null,
+                localModelValid = localModelValid,
+            )
+
+        return when (backend) {
+            TranscriptionBackend.Api -> {
+                val apiKey = prefs.getString(KEY_AI_TRANSCRIPTION_API_KEY, null)
+                    ?: return TranscribeRepoBuildResult(null, "Transcription API key missing")
+                val provider = prefs.getString(KEY_AI_TRANSCRIPTION_PROVIDER, "openai") ?: "openai"
+                val baseUrl = prefs.getString(KEY_AI_TRANSCRIPTION_BASE_URL, null)
+                val model = prefs.getString(KEY_AI_TRANSCRIPTION_MODEL, null)
+                val azureRegion = prefs.getString(KEY_AI_TRANSCRIPTION_AZURE_REGION, null)
+                TranscribeRepoBuildResult(
+                    ByokTranscribeAudioRepo(apiKey, provider, baseUrl, model, azureRegion),
+                )
+            }
+
+            TranscriptionBackend.Cloud -> {
+                config ?: return TranscribeRepoBuildResult(null, "Cloud transcription unavailable")
+                TranscribeRepoBuildResult(CloudTranscribeAudioRepo(config))
+            }
+
+            is TranscriptionBackend.Local -> {
+                TranscribeRepoBuildResult(
+                    LocalTranscribeAudioRepo(
+                        appFilesDir = filesDir,
+                        cacheDir = cacheDir,
+                        modelSlug = backend.model,
+                    ),
+                )
+            }
+
+            null -> {
+                val errorMessage =
+                    when (mode) {
+                        "local" ->
+                            if (!localTranscriptionSupported) {
+                                "Local transcription requires Android 8.0 or later"
+                            } else if (selectedModel.isNullOrBlank()) {
+                                "Download and select a local model in Voquill"
+                            } else {
+                                "Selected local model is missing or invalid"
+                            }
+
+                        "api" -> "Transcription API key missing"
+                        "cloud" -> "Cloud transcription unavailable"
+                        else -> "Transcription not configured"
+                    }
+                TranscribeRepoBuildResult(null, errorMessage)
+            }
         }
-        config ?: return null
-        return CloudTranscribeAudioRepo(config)
     }
 
     private fun buildGenerateTextRepo(prefs: android.content.SharedPreferences, config: RepoConfig?): BaseGenerateTextRepo? {
@@ -1158,10 +1213,11 @@ class VoquillIME : InputMethodService() {
                 config = RepoConfig(functionUrl = functionUrl, idToken = idToken)
             }
 
-            val transcribeRepo = buildTranscribeRepo(prefs, config)
+            val transcribeBuild = buildTranscribeRepo(prefs, config)
+            val transcribeRepo = transcribeBuild.repo
             if (transcribeRepo == null) {
                 handler.post {
-                    showPillError("Transcription not configured")
+                    showPillError(transcribeBuild.errorMessage ?: "Transcription not configured")
                 }
                 return@execute
             }
@@ -1171,7 +1227,7 @@ class VoquillIME : InputMethodService() {
 
             if (rawTranscript.isNullOrBlank()) {
                 handler.post {
-                    showPillError("Transcription failed — try again")
+                    showPillError(transcribeRepo.lastErrorMessage ?: "Transcription failed — try again")
                 }
                 return@execute
             }

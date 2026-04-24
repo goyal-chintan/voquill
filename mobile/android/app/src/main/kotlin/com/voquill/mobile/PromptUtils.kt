@@ -45,6 +45,13 @@ object PromptUtils {
         "th" to "สวัสดีครับ/ค่ะ สบายดีไหม ยินดีที่ได้พบคุณ",
         "bn" to "নমস্কার, কেমন আছেন? আপনার সাথে দেখা হয়ে ভালো লাগলো।",
         "yue" to "你好，最近點呀？見到你好開心。",
+        "cs" to "Dobrý den, jak se máte? Těší mě.",
+        "da" to "Hej, hvordan har du det? Rart at møde dig.",
+        "hu" to "Helló, hogy vagy? Örülök, hogy találkoztunk.",
+        "ms" to "Hello, apa khabar? Seronok bertemu dengan anda.",
+        "no" to "Hei, hvordan har du det? Hyggelig å møte deg.",
+        "ro" to "Bună, ce mai faci? Încântat de cunoștință.",
+        "ta" to "வணக்கம், நீங்கள் எப்படி இருக்கிறீர்கள்? உங்களைச் சந்தித்ததில் மகிழ்ச்சி.",
     )
 
     fun getConversationPrimer(languageCode: String): String {
@@ -315,6 +322,13 @@ $transcript
         "th" to "Thai",
         "bn" to "Bengali",
         "yue" to "Cantonese",
+        "cs" to "Czech",
+        "da" to "Danish",
+        "hu" to "Hungarian",
+        "ms" to "Malay",
+        "no" to "Norwegian",
+        "ro" to "Romanian",
+        "ta" to "Tamil",
     )
 
     fun getDisplayNameForLanguage(code: String): String {

@@ -3,14 +3,21 @@ use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
 use std::{thread, time::Duration};
 
 use super::accessibility;
+use crate::platform::paste_keybind::{parse_paste_keystroke, PasteKeystroke};
 
 const KEY_C: CGKeyCode = 8;
 const KEY_SPACE: CGKeyCode = 49;
 const KEY_V: CGKeyCode = 9;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PasteShortcut {
+    CommandV,
+    ControlShiftV,
+}
+
 pub(crate) fn paste_text_into_focused_field(
     text: &str,
-    _keybind: Option<&str>,
+    keybind: Option<&str>,
     skip_clipboard_restore: bool,
 ) -> Result<(), String> {
     if text.trim().is_empty() {
@@ -21,12 +28,16 @@ pub(crate) fn paste_text_into_focused_field(
         Ok(()) => Ok(()),
         Err(err) => {
             log::warn!("Accessibility insert failed ({err}), falling back to clipboard paste");
-            paste_via_clipboard(text, skip_clipboard_restore)
+            paste_via_clipboard(text, keybind, skip_clipboard_restore)
         }
     }
 }
 
-fn paste_via_clipboard(text: &str, skip_clipboard_restore: bool) -> Result<(), String> {
+fn paste_via_clipboard(
+    text: &str,
+    keybind: Option<&str>,
+    skip_clipboard_restore: bool,
+) -> Result<(), String> {
     let trimmed_text = text.trim_end_matches(' ');
     let trailing_spaces = text.len() - trimmed_text.len();
 
@@ -39,7 +50,7 @@ fn paste_via_clipboard(text: &str, skip_clipboard_restore: bool) -> Result<(), S
             .map_err(|err| format!("failed to store clipboard text: {err}"))?;
 
         thread::sleep(Duration::from_millis(50));
-        simulate_cmd_v()?;
+        simulate_paste(keybind)?;
 
         if !skip_clipboard_restore {
             thread::spawn(move || {
@@ -84,6 +95,24 @@ fn simulate_cmd_v() -> Result<(), String> {
     simulate_keypress(KEY_V, CGEventFlags::CGEventFlagCommand)
 }
 
+fn simulate_paste(keybind: Option<&str>) -> Result<(), String> {
+    match paste_shortcut_for_keybind(keybind) {
+        PasteShortcut::CommandV => simulate_cmd_v(),
+        PasteShortcut::ControlShiftV => simulate_keypress(
+            KEY_V,
+            CGEventFlags::CGEventFlagControl | CGEventFlags::CGEventFlagShift,
+        ),
+    }
+}
+
+fn paste_shortcut_for_keybind(keybind: Option<&str>) -> PasteShortcut {
+    match parse_paste_keystroke(keybind) {
+        PasteKeystroke::CtrlV => PasteShortcut::CommandV,
+        PasteKeystroke::CtrlShiftV => PasteShortcut::ControlShiftV,
+        PasteKeystroke::ShiftInsert => PasteShortcut::CommandV,
+    }
+}
+
 fn simulate_keypress(key_code: CGKeyCode, flags: CGEventFlags) -> Result<(), String> {
     // Use Private source so macOS Sonoma+ doesn't detect programmatic paste
     // and show an "Allow Paste" confirmation dialog.
@@ -103,4 +132,30 @@ fn simulate_keypress(key_code: CGKeyCode, flags: CGEventFlags) -> Result<(), Str
     key_up.post(CGEventTapLocation::HID);
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{paste_shortcut_for_keybind, PasteShortcut};
+
+    #[test]
+    fn uses_terminal_paste_shortcut_when_requested() {
+        assert_eq!(
+            paste_shortcut_for_keybind(Some("ctrl+shift+v")),
+            PasteShortcut::ControlShiftV
+        );
+    }
+
+    #[test]
+    fn keeps_default_command_v_for_standard_paste() {
+        assert_eq!(paste_shortcut_for_keybind(None), PasteShortcut::CommandV);
+    }
+
+    #[test]
+    fn falls_back_to_command_v_for_shift_insert_on_macos() {
+        assert_eq!(
+            paste_shortcut_for_keybind(Some("shift+insert")),
+            PasteShortcut::CommandV
+        );
+    }
 }

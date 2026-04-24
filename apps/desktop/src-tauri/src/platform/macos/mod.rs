@@ -24,3 +24,14 @@ pub fn supports_app_detection() -> bool {
 pub fn supports_paste_keybinds() -> crate::platform::PasteKeybindSupport {
     crate::platform::PasteKeybindSupport::Disabled
 }
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn keeps_paste_keybind_ui_disabled() {
+        assert!(matches!(
+            super::supports_paste_keybinds(),
+            crate::platform::PasteKeybindSupport::Disabled
+        ));
+    }
+}

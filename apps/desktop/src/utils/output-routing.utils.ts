@@ -5,12 +5,15 @@ import type {
 } from "@voquill/types";
 import { getIntl } from "../i18n/intl";
 import { getAppState } from "../store";
+import { isMacOS } from "./env.utils";
 import { getLogger } from "./log.utils";
 import { sendPillFlashMessage } from "./overlay.utils";
 import { sanitizeIndentation } from "./string.utils";
 import { getMyUserPreferences } from "./user.utils";
 
 type PasteOutcome = "pasted" | "copied_to_clipboard";
+const MACOS_TERMINAL_PASTE_KEYBIND = "ctrl+shift+v";
+const MACOS_TERMINAL_APP_HINTS = ["wezterm", "ghostty"];
 
 export const routeTranscriptOutput = async (
   args: RouteTranscriptOutputArgs,
@@ -43,10 +46,13 @@ export const routeTranscriptOutput = async (
     };
   }
 
-  const pasteKeybind =
+  const configuredPasteKeybind =
     state.supportsPasteKeybinds === "global"
       ? (prefs?.pasteKeybind ?? null)
       : (currentApp?.pasteKeybind ?? prefs?.pasteKeybind ?? null);
+  const pasteKeybind =
+    configuredPasteKeybind ??
+    inferMacOSTerminalPasteKeybind(args.currentAppId, currentApp?.name);
 
   await insertLocalTranscriptOutput(args.text, pasteKeybind);
 
@@ -77,4 +83,23 @@ export const insertLocalTranscriptOutput = async (
       }),
     );
   }
+};
+
+const inferMacOSTerminalPasteKeybind = (
+  appId: string | null | undefined,
+  appName: string | null | undefined,
+): string | null => {
+  if (!isMacOS()) {
+    return null;
+  }
+
+  const haystacks = [appId, appName].filter(
+    (value): value is string => Boolean(value?.trim()),
+  );
+  const matchesKnownTerminal = haystacks.some((value) => {
+    const normalized = value.trim().toLowerCase();
+    return MACOS_TERMINAL_APP_HINTS.some((hint) => normalized.includes(hint));
+  });
+
+  return matchesKnownTerminal ? MACOS_TERMINAL_PASTE_KEYBIND : null;
 };

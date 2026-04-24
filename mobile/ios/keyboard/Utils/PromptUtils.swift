@@ -52,10 +52,12 @@ private let transcriptionPrimerByCode: [String: String] = [
     "da": "Hej, hvordan har du det? Rart at møde dig.",
     "no": "Hei, hvordan har du det? Hyggelig å møte deg.",
     "ro": "Bună, ce mai faci? Încântat de cunoștință.",
-    "hu": "Szia, hogy vagy? Örülök, hogy megismerhetlek.",
-    "cs": "Ahoj, jak se máš? Těší mě.",
-    "ms": "Halo, apa khabar? Senang bertemu dengan anda.",
+    "hu": "Helló, hogy vagy? Örülök, hogy találkoztunk.",
+    "cs": "Dobrý den, jak se máte? Těší mě.",
+    "ms": "Hello, apa khabar? Seronok bertemu dengan anda.",
     "ta": "வணக்கம், நீங்கள் எப்படி இருக்கிறீர்கள்? உங்களை சந்தித்ததில் மகிழ்ச்சி.",
+    "bn": "নমস্কার, কেমন আছেন? আপনার সাথে দেখা হয়ে ভালো লাগলো।",
+    "yue": "你好，最近點呀？見到你好開心。",
 ]
 
 func buildTranscriptionPrompt(termIds: [String], termById: [String: SharedTerm], userName: String) -> String {
@@ -151,7 +153,7 @@ private let languageDisplayNames: [String: String] = [
     "id": "Indonesian", "hi": "Hindi", "fi": "Finnish", "vi": "Vietnamese",
     "he": "Hebrew", "uk": "Ukrainian", "el": "Greek", "th": "Thai",
     "da": "Danish", "no": "Norwegian", "ro": "Romanian", "hu": "Hungarian",
-    "cs": "Czech", "ms": "Malay", "ta": "Tamil",
+    "cs": "Czech", "ms": "Malay", "ta": "Tamil", "bn": "Bengali", "yue": "Cantonese",
 ]
 
 private func getDisplayNameForLanguage(_ code: String) -> String {

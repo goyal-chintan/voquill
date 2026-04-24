@@ -11,9 +11,28 @@ fn handle_run_event(app_handle: &tauri::AppHandle, event: RunEvent) {
             let _ = app_handle.save_window_state(StateFlags::SIZE | StateFlags::POSITION);
         }
         #[cfg(target_os = "macos")]
-        RunEvent::Reopen { .. } => {
-            if let Some(window) = app_handle.get_webview_window("main") {
-                let _ = crate::platform::window::surface_main_window(&window);
+        RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } => {
+            // After dictation the pill overlay hides, which can cause macOS to
+            // fire applicationShouldHandleReopen.  Suppress that single reopen
+            // so the main window doesn't steal focus from the target app.
+            if let Some(overlay) = app_handle.try_state::<crate::state::OverlayState>() {
+                if overlay.take_suppress_reopen() {
+                    log::debug!("Suppressed RunEvent::Reopen after dictation ended");
+                    return;
+                }
+            }
+
+            // Only surface the main window when there are no visible windows
+            // (e.g. user clicked the dock icon while the window was hidden).
+            // When the window is already visible but behind other apps,
+            // has_visible_windows is true and we must not steal focus.
+            if !has_visible_windows {
+                if let Some(window) = app_handle.get_webview_window("main") {
+                    let _ = crate::platform::window::surface_main_window(&window);
+                }
             }
         }
         _ => {}

@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use crate::domain::{OverlayPhase, PillWindowSize};
@@ -16,6 +16,10 @@ pub struct OverlayState {
     phase: AtomicU8,
     pill_window_size: AtomicU8,
     audio_levels: Mutex<Vec<f32>>,
+    /// Set when the overlay transitions from recording/loading → idle.
+    /// Consumed (cleared) by the RunEvent::Reopen handler to suppress one
+    /// focus-steal that macOS can trigger when the pill overlay hides.
+    suppress_reopen: AtomicBool,
 }
 
 impl Default for OverlayState {
@@ -30,6 +34,7 @@ impl OverlayState {
             phase: AtomicU8::new(PHASE_IDLE),
             pill_window_size: AtomicU8::new(SIZE_DICTATION),
             audio_levels: Mutex::new(Vec::new()),
+            suppress_reopen: AtomicBool::new(false),
         }
     }
 
@@ -48,12 +53,20 @@ impl OverlayState {
     }
 
     pub fn set_phase(&self, phase: &OverlayPhase) {
+        let prev = self.phase.load(Ordering::Relaxed);
         let value = match phase {
             OverlayPhase::Idle => PHASE_IDLE,
             OverlayPhase::Recording => PHASE_RECORDING,
             OverlayPhase::Loading => PHASE_LOADING,
         };
         self.phase.store(value, Ordering::Relaxed);
+
+        // When transitioning from recording/loading → idle, suppress the next
+        // RunEvent::Reopen so the main window doesn't steal focus from the
+        // target app right after dictation completes.
+        if value == PHASE_IDLE && (prev == PHASE_RECORDING || prev == PHASE_LOADING) {
+            self.suppress_reopen.store(true, Ordering::Relaxed);
+        }
     }
 
     pub fn get_phase(&self) -> OverlayPhase {
@@ -89,5 +102,11 @@ impl OverlayState {
 
     pub fn is_assistant_mode(&self) -> bool {
         self.pill_window_size.load(Ordering::Relaxed) != SIZE_DICTATION
+    }
+
+    /// Returns `true` (once) if a recording/loading → idle transition happened
+    /// since the last call.  The flag is atomically cleared.
+    pub fn take_suppress_reopen(&self) -> bool {
+        self.suppress_reopen.swap(false, Ordering::Relaxed)
     }
 }

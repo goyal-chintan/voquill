@@ -1,7 +1,9 @@
 use std::convert::TryInto;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, EventTarget, Manager, State};
 
 use hound::{SampleFormat, WavSpec, WavWriter};
@@ -107,6 +109,45 @@ pub struct TextFieldInfo {
 #[serde(rename_all = "camelCase")]
 pub struct ScreenContextInfo {
     pub screen_context: Option<String>,
+}
+
+const SCREEN_CONTEXT_TIMEOUT: Duration = Duration::from_millis(500);
+
+#[cfg(test)]
+type ScreenContextFetcher = Arc<dyn Fn() -> ScreenContextInfo + Send + Sync>;
+
+#[cfg(test)]
+static TEST_SCREEN_CONTEXT_FETCHER: OnceLock<Mutex<ScreenContextFetcher>> = OnceLock::new();
+
+#[cfg(test)]
+fn default_screen_context_fetcher() -> ScreenContextFetcher {
+    Arc::new(|| crate::platform::accessibility::get_screen_context())
+}
+
+#[cfg(test)]
+fn test_screen_context_fetcher() -> &'static Mutex<ScreenContextFetcher> {
+    TEST_SCREEN_CONTEXT_FETCHER.get_or_init(|| Mutex::new(default_screen_context_fetcher()))
+}
+
+#[cfg(test)]
+fn set_test_screen_context_fetcher(fetcher: ScreenContextFetcher) {
+    *test_screen_context_fetcher().lock().unwrap() = fetcher;
+}
+
+#[cfg(test)]
+fn reset_test_screen_context_fetcher() {
+    set_test_screen_context_fetcher(default_screen_context_fetcher());
+}
+
+#[cfg(test)]
+fn fetch_screen_context_for_command() -> ScreenContextInfo {
+    let fetcher = test_screen_context_fetcher().lock().unwrap().clone();
+    fetcher()
+}
+
+#[cfg(not(test))]
+fn fetch_screen_context_for_command() -> ScreenContextInfo {
+    crate::platform::accessibility::get_screen_context()
 }
 
 #[derive(serde::Serialize, specta::Type)]
@@ -1974,9 +2015,13 @@ pub async fn get_text_field_info() -> Result<TextFieldInfo, String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn get_screen_context() -> Result<ScreenContextInfo, String> {
-    tauri::async_runtime::spawn_blocking(crate::platform::accessibility::get_screen_context)
-        .await
-        .map_err(|err| err.to_string())
+    tokio::time::timeout(
+        SCREEN_CONTEXT_TIMEOUT,
+        tauri::async_runtime::spawn_blocking(fetch_screen_context_for_command),
+    )
+    .await
+    .map_err(|_| "get_screen_context timed out".to_string())?
+    .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -2429,4 +2474,46 @@ pub async fn auth_is_signed_in(
         .is_signed_in()
         .await
         .map_err(|err| err.to_user_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        get_screen_context, reset_test_screen_context_fetcher, set_test_screen_context_fetcher,
+        ScreenContextInfo,
+    };
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
+
+    struct ScreenContextFetcherReset;
+
+    impl Drop for ScreenContextFetcherReset {
+        fn drop(&mut self) {
+            reset_test_screen_context_fetcher();
+        }
+    }
+
+    #[test]
+    fn get_screen_context_times_out_when_accessibility_collection_stalls() {
+        let _reset = ScreenContextFetcherReset;
+        set_test_screen_context_fetcher(Arc::new(|| {
+            std::thread::sleep(Duration::from_millis(900));
+            ScreenContextInfo {
+                screen_context: Some("slow context".to_string()),
+            }
+        }));
+
+        let started_at = Instant::now();
+        let result = tauri::async_runtime::block_on(get_screen_context());
+        let elapsed = started_at.elapsed();
+
+        match result {
+            Err(err) => assert_eq!(err, "get_screen_context timed out"),
+            Ok(_) => panic!("expected get_screen_context to time out"),
+        }
+        assert!(
+            elapsed < Duration::from_millis(850),
+            "expected timeout before slow accessibility collection finished, got {elapsed:?}"
+        );
+    }
 }

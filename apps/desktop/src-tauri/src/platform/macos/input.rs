@@ -85,7 +85,9 @@ fn simulate_cmd_v() -> Result<(), String> {
 }
 
 fn simulate_keypress(key_code: CGKeyCode, flags: CGEventFlags) -> Result<(), String> {
-    let source = CGEventSource::new(CGEventSourceStateID::CombinedSessionState)
+    // Use Private source so macOS Sonoma+ doesn't detect programmatic paste
+    // and show an "Allow Paste" confirmation dialog.
+    let source = CGEventSource::new(CGEventSourceStateID::Private)
         .map_err(|_| "failed to create event source")?;
 
     let key_down = CGEvent::new_keyboard_event(source.clone(), key_code, true)

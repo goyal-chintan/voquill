@@ -42,12 +42,12 @@ class CloudGenerateTextRepo(
             return JSONObject().apply {
                 put("type", "object")
                 put("properties", JSONObject().apply {
-                    put("processedTranscription", JSONObject().apply {
+                    put("result", JSONObject().apply {
                         put("type", "string")
                     })
                 })
                 put("required", JSONArray().apply {
-                    put("processedTranscription")
+                    put("result")
                 })
                 put("additionalProperties", false)
             }

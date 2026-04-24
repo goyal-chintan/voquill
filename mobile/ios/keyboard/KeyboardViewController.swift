@@ -1239,24 +1239,37 @@ class KeyboardViewController: UIInputViewController {
 
                     var finalText = rawTranscript
                     do {
-                        if let tone = capturedToneId.flatMap({ capturedToneById[$0] }) {
-                            if let generateRepo = self.buildGenerateTextRepo(defaults: defaults, config: config) {
-                                let raw = try await generateRepo.generate(
-                                    system: buildSystemPostProcessingPrompt(),
-                                    prompt: buildPostProcessingPrompt(
-                                        transcript: rawTranscript,
-                                        tonePromptTemplate: tone.promptTemplate,
-                                        termIds: self.termIds,
-                                        termById: self.termById
-                                    ),
-                                    jsonResponse: postProcessingJsonResponse
-                                )
-                                if let processed = extractPostProcessingResult(from: raw) {
-                                    finalText = processed.trimmingCharacters(in: .whitespacesAndNewlines)
-                                } else {
-                                    self.dbg("Could not parse result from post-processing JSON, using raw")
-                                    finalText = raw
-                                }
+                        if let generateRepo = self.buildGenerateTextRepo(defaults: defaults, config: config) {
+                            let tone = capturedToneId.flatMap({ capturedToneById[$0] })
+                            let glossaryTerms = buildGlossaryTerms(
+                                termIds: self.termIds,
+                                termById: self.termById,
+                                userName: userName
+                            )
+                            let replacementMap = buildReplacementInstructions(
+                                termIds: self.termIds,
+                                termById: self.termById
+                            )
+                            let systemPrompt = buildSystemPostProcessingPrompt(
+                                language: dictationLanguage,
+                                glossaryTerms: glossaryTerms,
+                                replacementMap: replacementMap
+                            )
+                            let userPrompt = buildPostProcessingPrompt(
+                                transcript: rawTranscript,
+                                tonePromptTemplate: tone?.promptTemplate,
+                                termIds: self.termIds,
+                                termById: self.termById
+                            )
+                            let raw = try await generateRepo.generate(
+                                system: systemPrompt,
+                                prompt: userPrompt,
+                                jsonResponse: postProcessingJsonResponse
+                            )
+                            if let processed = extractPostProcessingResult(from: raw, fallbackTranscript: rawTranscript) {
+                                finalText = processed.trimmingCharacters(in: .whitespacesAndNewlines)
+                            } else {
+                                self.dbg("Could not parse result from post-processing JSON, using raw transcript")
                             }
                         }
                     } catch {

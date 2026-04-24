@@ -1,5 +1,6 @@
 use std::convert::TryInto;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 #[cfg(test)]
 use std::sync::{Mutex, OnceLock};
@@ -114,14 +115,25 @@ pub struct ScreenContextInfo {
 const SCREEN_CONTEXT_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[cfg(test)]
-type ScreenContextFetcher = Arc<dyn Fn() -> ScreenContextInfo + Send + Sync>;
+type ScreenContextFetcher = Arc<dyn Fn(Arc<AtomicBool>) -> ScreenContextInfo + Send + Sync>;
 
 #[cfg(test)]
 static TEST_SCREEN_CONTEXT_FETCHER: OnceLock<Mutex<ScreenContextFetcher>> = OnceLock::new();
 
 #[cfg(test)]
 fn default_screen_context_fetcher() -> ScreenContextFetcher {
-    Arc::new(|| crate::platform::accessibility::get_screen_context())
+    Arc::new(|cancelled| {
+        #[cfg(target_os = "macos")]
+        {
+            crate::platform::accessibility::get_screen_context_with_cancel(cancelled)
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = cancelled;
+            crate::platform::accessibility::get_screen_context()
+        }
+    })
 }
 
 #[cfg(test)]
@@ -140,14 +152,23 @@ fn reset_test_screen_context_fetcher() {
 }
 
 #[cfg(test)]
-fn fetch_screen_context_for_command() -> ScreenContextInfo {
+fn fetch_screen_context_for_command(cancelled: Arc<AtomicBool>) -> ScreenContextInfo {
     let fetcher = test_screen_context_fetcher().lock().unwrap().clone();
-    fetcher()
+    fetcher(cancelled)
 }
 
 #[cfg(not(test))]
-fn fetch_screen_context_for_command() -> ScreenContextInfo {
-    crate::platform::accessibility::get_screen_context()
+fn fetch_screen_context_for_command(cancelled: Arc<AtomicBool>) -> ScreenContextInfo {
+    #[cfg(target_os = "macos")]
+    {
+        crate::platform::accessibility::get_screen_context_with_cancel(cancelled)
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = cancelled;
+        crate::platform::accessibility::get_screen_context()
+    }
 }
 
 #[derive(serde::Serialize, specta::Type)]
@@ -2015,13 +2036,17 @@ pub async fn get_text_field_info() -> Result<TextFieldInfo, String> {
 #[tauri::command]
 #[specta::specta]
 pub async fn get_screen_context() -> Result<ScreenContextInfo, String> {
-    tokio::time::timeout(
-        SCREEN_CONTEXT_TIMEOUT,
-        tauri::async_runtime::spawn_blocking(fetch_screen_context_for_command),
-    )
-    .await
-    .map_err(|_| "get_screen_context timed out".to_string())?
-    .map_err(|err| err.to_string())
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let fetch_cancelled = Arc::clone(&cancelled);
+    let task = tauri::async_runtime::spawn_blocking(move || fetch_screen_context_for_command(fetch_cancelled));
+
+    match tokio::time::timeout(SCREEN_CONTEXT_TIMEOUT, task).await {
+        Ok(join_result) => join_result.map_err(|err| err.to_string()),
+        Err(_) => {
+            cancelled.store(true, Ordering::Relaxed);
+            Err("get_screen_context timed out".to_string())
+        }
+    }
 }
 
 #[tauri::command]
@@ -2482,6 +2507,7 @@ mod tests {
         get_screen_context, reset_test_screen_context_fetcher, set_test_screen_context_fetcher,
         ScreenContextInfo,
     };
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
     use std::time::{Duration, Instant};
 
@@ -2496,7 +2522,7 @@ mod tests {
     #[test]
     fn get_screen_context_times_out_when_accessibility_collection_stalls() {
         let _reset = ScreenContextFetcherReset;
-        set_test_screen_context_fetcher(Arc::new(|| {
+        set_test_screen_context_fetcher(Arc::new(|_| {
             std::thread::sleep(Duration::from_millis(900));
             ScreenContextInfo {
                 screen_context: Some("slow context".to_string()),
@@ -2514,6 +2540,43 @@ mod tests {
         assert!(
             elapsed < Duration::from_millis(850),
             "expected timeout before slow accessibility collection finished, got {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn get_screen_context_cancels_cooperative_fetcher_after_timeout() {
+        let _reset = ScreenContextFetcherReset;
+        let finished = Arc::new(AtomicBool::new(false));
+        let finished_for_fetcher = Arc::clone(&finished);
+
+        set_test_screen_context_fetcher(Arc::new(move |cancelled| {
+            let started_at = Instant::now();
+            while !cancelled.load(Ordering::Relaxed)
+                && started_at.elapsed() < Duration::from_secs(2)
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            finished_for_fetcher.store(true, Ordering::Relaxed);
+            ScreenContextInfo {
+                screen_context: Some("cancelled context".to_string()),
+            }
+        }));
+
+        let result = tauri::async_runtime::block_on(get_screen_context());
+        match result {
+            Err(err) => assert_eq!(err, "get_screen_context timed out"),
+            Ok(_) => panic!("expected get_screen_context to time out"),
+        }
+
+        let wait_started = Instant::now();
+        while !finished.load(Ordering::Relaxed) && wait_started.elapsed() < Duration::from_millis(300)
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert!(
+            finished.load(Ordering::Relaxed),
+            "expected cooperative screen-context fetcher to stop shortly after timeout"
         );
     }
 }

@@ -12,6 +12,14 @@ const { storeState, invokeMock, isMacOSMock } = vi.hoisted(() => ({
   isMacOSMock: vi.fn(),
 }));
 
+const getTestAppState = (): AppState => {
+  if (!storeState.appState) {
+    throw new Error("Test app state not initialized");
+  }
+
+  return storeState.appState;
+};
+
 vi.mock("@tauri-apps/api/core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tauri-apps/api/core")>();
 
@@ -22,7 +30,7 @@ vi.mock("@tauri-apps/api/core", async (importOriginal) => {
 });
 
 vi.mock("../store", () => ({
-  getAppState: () => storeState.appState,
+  getAppState: () => getTestAppState(),
 }));
 
 vi.mock("./env.utils", async (importOriginal) => {
@@ -87,7 +95,7 @@ describe("routeTranscriptOutput", () => {
 
   it("uses terminal paste binding for WezTerm on macOS when no explicit binding is configured", async () => {
     isMacOSMock.mockReturnValue(true);
-    storeState.appState.appTargetById.wezterm = makeAppTarget({
+    getTestAppState().appTargetById.wezterm = makeAppTarget({
       id: "wezterm",
       name: "WezTerm",
     });
@@ -106,7 +114,7 @@ describe("routeTranscriptOutput", () => {
 
   it("keeps an explicit app paste binding instead of overriding it with terminal defaults", async () => {
     isMacOSMock.mockReturnValue(true);
-    storeState.appState.appTargetById.wezterm = makeAppTarget({
+    getTestAppState().appTargetById.wezterm = makeAppTarget({
       id: "wezterm",
       name: "WezTerm",
       pasteKeybind: "ctrl+v",

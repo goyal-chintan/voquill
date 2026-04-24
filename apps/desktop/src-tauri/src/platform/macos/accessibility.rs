@@ -7,6 +7,8 @@ use core_foundation::string::{CFString, CFStringGetTypeID, CFStringRef};
 use std::ffi::c_void;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 extern "C" {
     fn dispatch_sync_f(queue: *mut c_void, context: *mut c_void, work: extern "C" fn(*mut c_void));
@@ -102,7 +104,18 @@ pub fn get_text_field_info() -> TextFieldInfo {
 
 /// Get screen context information gathered from the screen around the focused element.
 pub fn get_screen_context() -> ScreenContextInfo {
-    catch_unwind(AssertUnwindSafe(|| unsafe { get_screen_context_impl() })).unwrap_or_else(|_| {
+    get_screen_context_impl_safe(None)
+}
+
+pub fn get_screen_context_with_cancel(cancelled: Arc<AtomicBool>) -> ScreenContextInfo {
+    get_screen_context_impl_safe(Some(cancelled))
+}
+
+fn get_screen_context_impl_safe(cancelled: Option<Arc<AtomicBool>>) -> ScreenContextInfo {
+    catch_unwind(AssertUnwindSafe(|| unsafe {
+        get_screen_context_impl(cancelled.as_deref())
+    }))
+    .unwrap_or_else(|_| {
         log::error!("get_screen_context panicked, returning empty");
         ScreenContextInfo {
             screen_context: None,
@@ -149,7 +162,13 @@ unsafe fn get_text_field_info_impl() -> TextFieldInfo {
     }
 }
 
-unsafe fn get_screen_context_impl() -> ScreenContextInfo {
+fn is_cancelled(cancelled: Option<&AtomicBool>) -> bool {
+    cancelled
+        .map(|flag| flag.load(Ordering::Relaxed))
+        .unwrap_or(false)
+}
+
+unsafe fn get_screen_context_impl(cancelled: Option<&AtomicBool>) -> ScreenContextInfo {
     let ax_focused_ui_element = CFString::new("AXFocusedUIElement");
 
     let system_wide = AXUIElementCreateSystemWide();
@@ -174,7 +193,7 @@ unsafe fn get_screen_context_impl() -> ScreenContextInfo {
         };
     }
 
-    let context = gather_context_outward(focused_element);
+    let context = gather_context_outward(focused_element, cancelled);
     let screen_context = if context.is_empty() {
         None
     } else {
@@ -373,8 +392,13 @@ unsafe fn extract_text_from_web_area(
     max_depth: usize,
     collected_len: &mut usize,
     max_len: usize,
+    cancelled: Option<&AtomicBool>,
 ) -> Vec<String> {
-    if element.is_null() || depth > max_depth || *collected_len > max_len {
+    if element.is_null()
+        || depth > max_depth
+        || *collected_len > max_len
+        || is_cancelled(cancelled)
+    {
         return Vec::new();
     }
 
@@ -409,7 +433,7 @@ unsafe fn extract_text_from_web_area(
         let arr = children_ref as core_foundation::array::CFArrayRef;
         let count = CFArrayGetCount(arr).min(100);
         for i in 0..count {
-            if *collected_len > max_len {
+            if *collected_len > max_len || is_cancelled(cancelled) {
                 break;
             }
             let child = CFArrayGetValueAtIndex(arr, i);
@@ -423,6 +447,7 @@ unsafe fn extract_text_from_web_area(
                     max_depth,
                     collected_len,
                     max_len,
+                    cancelled,
                 );
                 texts.extend(child_texts);
             }
@@ -444,8 +469,9 @@ unsafe fn extract_text_recursive(
     ax_children: CFStringRef,
     depth: usize,
     max_depth: usize,
+    cancelled: Option<&AtomicBool>,
 ) -> Vec<String> {
-    if element.is_null() || depth > max_depth {
+    if element.is_null() || depth > max_depth || is_cancelled(cancelled) {
         return Vec::new();
     }
 
@@ -468,6 +494,7 @@ unsafe fn extract_text_recursive(
             15,
             &mut collected_len,
             8000,
+            cancelled,
         );
         texts.extend(web_texts);
         return texts;
@@ -511,6 +538,9 @@ unsafe fn extract_text_recursive(
             let arr = children_ref as core_foundation::array::CFArrayRef;
             let count = CFArrayGetCount(arr).min(30);
             for i in 0..count {
+                if is_cancelled(cancelled) {
+                    break;
+                }
                 let child = CFArrayGetValueAtIndex(arr, i);
                 if !child.is_null() {
                     let child_texts = extract_text_recursive(
@@ -523,6 +553,7 @@ unsafe fn extract_text_recursive(
                         ax_children,
                         depth + 1,
                         max_depth,
+                        cancelled,
                     );
                     texts.extend(child_texts);
                 }
@@ -534,7 +565,7 @@ unsafe fn extract_text_recursive(
     texts
 }
 
-unsafe fn gather_context_outward(focused_element: CFTypeRef) -> String {
+unsafe fn gather_context_outward(focused_element: CFTypeRef, cancelled: Option<&AtomicBool>) -> String {
     if focused_element.is_null() {
         return String::new();
     }
@@ -567,6 +598,10 @@ unsafe fn gather_context_outward(focused_element: CFTypeRef) -> String {
     let mut levels_up = 0;
 
     while levels_up < MAX_LEVELS_UP {
+        if is_cancelled(cancelled) {
+            break;
+        }
+
         let mut parent: CFTypeRef = ptr::null();
         let parent_result = AXUIElementCopyAttributeValue(
             current_element,
@@ -615,6 +650,9 @@ unsafe fn gather_context_outward(focused_element: CFTypeRef) -> String {
             let count = CFArrayGetCount(arr).min(MAX_SIBLINGS);
 
             for i in 0..count {
+                if is_cancelled(cancelled) {
+                    break;
+                }
                 let sibling = CFArrayGetValueAtIndex(arr, i);
                 if sibling.is_null() {
                     continue;
@@ -631,6 +669,7 @@ unsafe fn gather_context_outward(focused_element: CFTypeRef) -> String {
                     ax_children.as_concrete_TypeRef(),
                     0,
                     5, // max 5 levels deep into each sibling
+                    cancelled,
                 );
                 texts.extend(sibling_texts);
 
